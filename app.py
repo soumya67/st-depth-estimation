@@ -130,6 +130,12 @@ with right:
 
     df_img = predictions[predictions["relative_path"] == selected_image].copy()
 
+    # TINY TWEAK: sort by confidence (if present)
+    if "confidence" in df_img.columns:
+        # robust: if confidence is stringy, coerce; NaNs sort last
+        df_img["confidence"] = pd.to_numeric(df_img["confidence"], errors="coerce")
+        df_img = df_img.sort_values("confidence", ascending=False)
+
     # Optional label filter
     label_filter = "All"
     if "label" in df_img.columns and len(df_img) > 0:
@@ -163,6 +169,16 @@ with right:
 
     st.dataframe(df_show, use_container_width=True)
     st.caption(f"{len(df_show)} detections shown (of {len(df_img)} total)")
+
+# TINY TWEAK: sidebar sanity checks (put after df_img/df_show exists)
+st.sidebar.header("Sanity checks")
+st.sidebar.write(f"Images found: {len(images)}")
+st.sidebar.write(f"Detections rows (CSV): {len(predictions)}")
+st.sidebar.write(f"Selected image: {selected_image}")
+st.sidebar.write(f"Detections for selected image: {len(df_img)}")
+st.sidebar.write(f"Showing after label filter: {len(df_show)}")
+st.sidebar.caption(f"CSV: {CSV_PATH}")
+st.sidebar.caption(f"Images: {IMAGE_FOLDER}")
 
 st.divider()
 st.subheader("Preview")
