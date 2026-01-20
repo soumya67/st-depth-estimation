@@ -100,12 +100,17 @@ if not images:
     st.error(f"No images found in {IMAGE_FOLDER}")
     st.stop()
 
+if "relative_path" not in predictions.columns:
+    st.error("CSV missing required column: relative_path")
+    st.stop()
 
-# ----- UI -----
-left, right = st.columns([1, 1])
 
-with left:
-    st.subheader("Select image")
+# ----- UI layout: controls left, preview right (bigger preview) -----
+controls_col, preview_col = st.columns([0.30, 0.70], gap="large")
+
+with controls_col:
+    st.subheader("Controls")
+
     selected_image = st.selectbox("Image", images)
 
     show_boxes = st.toggle("Show bounding boxes", value=True)
@@ -118,21 +123,11 @@ with left:
         help="Bottom-center is often closer to ground contact (useful for distance).",
     )
 
-    img_path = os.path.join(IMAGE_FOLDER, selected_image)
-    img = Image.open(img_path).convert("RGB")
-
-with right:
-    st.subheader("Detections for selected image")
-
-    if "relative_path" not in predictions.columns:
-        st.error("CSV missing required column: relative_path")
-        st.stop()
-
+    # Filter detections for image
     df_img = predictions[predictions["relative_path"] == selected_image].copy()
 
-    # TINY TWEAK: sort by confidence (if present)
+    # Sort by confidence if available
     if "confidence" in df_img.columns:
-        # robust: if confidence is stringy, coerce; NaNs sort last
         df_img["confidence"] = pd.to_numeric(df_img["confidence"], errors="coerce")
         df_img = df_img.sort_values("confidence", ascending=False)
 
@@ -142,7 +137,7 @@ with right:
         labels = sorted(df_img["label"].astype(str).unique().tolist())
         label_filter = st.selectbox("Filter by label", ["All"] + labels)
 
-    if label_filter != "All" and "label" in df_img.columns:
+    if label_filter != "All":
         df_show = df_img[df_img["label"].astype(str) == label_filter].copy()
     else:
         df_show = df_img.copy()
@@ -150,8 +145,7 @@ with right:
     # Add sample point columns to table (if bbox columns exist)
     required_bbox_cols = ["bbox_left", "bbox_top", "bbox_right", "bbox_bottom"]
     if len(df_show) > 0 and all(c in df_show.columns for c in required_bbox_cols):
-        xs = []
-        ys = []
+        xs, ys = [], []
         for _, row in df_show.iterrows():
             left_i = _safe_int(row.get("bbox_left"))
             top_i = _safe_int(row.get("bbox_top"))
@@ -167,30 +161,28 @@ with right:
         df_show["sample_x"] = xs
         df_show["sample_y"] = ys
 
-    st.dataframe(df_show, use_container_width=True)
     st.caption(f"{len(df_show)} detections shown (of {len(df_img)} total)")
 
-# TINY TWEAK: sidebar sanity checks (put after df_img/df_show exists)
-st.sidebar.header("Sanity checks")
-st.sidebar.write(f"Images found: {len(images)}")
-st.sidebar.write(f"Detections rows (CSV): {len(predictions)}")
-st.sidebar.write(f"Selected image: {selected_image}")
-st.sidebar.write(f"Detections for selected image: {len(df_img)}")
-st.sidebar.write(f"Showing after label filter: {len(df_show)}")
-st.sidebar.caption(f"CSV: {CSV_PATH}")
-st.sidebar.caption(f"Images: {IMAGE_FOLDER}")
+with preview_col:
+    st.subheader("Preview")
+    st.markdown("---")
 
-st.divider()
-st.subheader("Preview")
+    img_path = os.path.join(IMAGE_FOLDER, selected_image)
+    img = Image.open(img_path).convert("RGB")
 
-preview = img
-if len(df_show) > 0 and (show_boxes or show_points):
-    preview = draw_overlays(
-        img,
-        df_show,
-        point_mode=point_mode,
-        show_boxes=show_boxes,
-        show_points=show_points,
-    )
+    preview = img
+    if len(df_show) > 0 and (show_boxes or show_points):
+        preview = draw_overlays(
+            img,
+            df_show,
+            point_mode=point_mode,
+            show_boxes=show_boxes,
+            show_points=show_points,
+        )
 
-st.image(preview, caption=f"{selected_image} | points: {point_mode}", use_container_width=True)
+    # Larger, but not overwhelming
+    st.image(preview, caption=f"{selected_image} | points: {point_mode}", width=1100)
+
+# Table below (OK to scroll for this)
+st.subheader("Detections table")
+st.dataframe(df_show, use_container_width=True)
