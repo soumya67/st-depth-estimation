@@ -13,11 +13,20 @@ st.title("Depth Estimation Tool")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGE_FOLDER = os.path.join(BASE_DIR, "test-imgs")
 CSV_PATH = os.path.join(IMAGE_FOLDER, "results_detections.csv")
+CALIBRATION_CSV_PATH = os.path.join(IMAGE_FOLDER, "calibration_points.csv")
 
 
+# ---------- helpers ----------
 def _safe_int(x) -> Optional[int]:
     try:
         return int(float(x))
+    except Exception:
+        return None
+
+
+def _safe_float(x) -> Optional[float]:
+    try:
+        return float(x)
     except Exception:
         return None
 
@@ -62,7 +71,6 @@ def draw_overlays(
         if None in (left, top, right, bottom):
             continue
 
-        # Bounding box
         if show_boxes:
             draw.rectangle([(left, top), (right, bottom)], width=3)
 
@@ -77,25 +85,43 @@ def draw_overlays(
             if label:
                 draw.text((left, max(0, top - 14)), label, font=font)
 
-        # Sampling point marker
         if show_points:
             x, y = compute_sample_point(left, top, right, bottom, point_mode)
-            r = 5
+            r = 6
             draw.ellipse([(x - r, y - r), (x + r, y + r)], width=3)
 
     return annotated
 
 
-# ----- Load data -----
+def load_calibration_points() -> pd.DataFrame:
+    """Load calibration points from CSV if it exists; otherwise return empty DF."""
+    cols = ["x", "y", "distance_m"]
+    if os.path.exists(CALIBRATION_CSV_PATH):
+        try:
+            df = pd.read_csv(CALIBRATION_CSV_PATH)
+            # ensure required columns exist
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = None
+            return df[cols].copy()
+        except Exception:
+            return pd.DataFrame(columns=cols)
+    return pd.DataFrame(columns=cols)
+
+
+def save_calibration_points(df: pd.DataFrame) -> None:
+    os.makedirs(os.path.dirname(CALIBRATION_CSV_PATH), exist_ok=True)
+    df.to_csv(CALIBRATION_CSV_PATH, index=False)
+
+
+# ---------- load data ----------
 if not os.path.exists(CSV_PATH):
     st.error(f"Detections CSV not found: {CSV_PATH}")
     st.stop()
 
 predictions = pd.read_csv(CSV_PATH)
 
-images = sorted(
-    [f for f in os.listdir(IMAGE_FOLDER) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
-)
+images = sorted([f for f in os.listdir(IMAGE_FOLDER) if f.lower().endswith((".png", ".jpg", ".jpeg"))])
 if not images:
     st.error(f"No images found in {IMAGE_FOLDER}")
     st.stop()
@@ -104,8 +130,12 @@ if "relative_path" not in predictions.columns:
     st.error("CSV missing required column: relative_path")
     st.stop()
 
+# session state for calibration points
+if "calib_df" not in st.session_state:
+    st.session_state.calib_df = load_calibration_points()
 
-# ----- UI layout: controls left, preview right (bigger preview) -----
+
+# ---------- UI layout ----------
 controls_col, preview_col = st.columns([0.30, 0.70], gap="large")
 
 with controls_col:
@@ -142,7 +172,7 @@ with controls_col:
     else:
         df_show = df_img.copy()
 
-    # Add sample point columns to table (if bbox columns exist)
+    # Add sample point columns to table
     required_bbox_cols = ["bbox_left", "bbox_top", "bbox_right", "bbox_bottom"]
     if len(df_show) > 0 and all(c in df_show.columns for c in required_bbox_cols):
         xs, ys = [], []
@@ -163,6 +193,56 @@ with controls_col:
 
     st.caption(f"{len(df_show)} detections shown (of {len(df_img)} total)")
 
+    st.divider()
+    st.subheader("Calibration points (manual entry)")
+
+    st.caption(
+        "Add a few reference points on the image with known distance (meters). "
+        "We’ll later map depth values at these points to real-world distance."
+    )
+
+    # Entry widgets
+    c1, c2 = st.columns(2)
+    with c1:
+        x_in = st.number_input("x (pixel)", min_value=0, value=0, step=1)
+        dist_in = st.number_input("known distance (m)", min_value=0.0, value=0.0, step=0.5)
+    with c2:
+        y_in = st.number_input("y (pixel)", min_value=0, value=0, step=1)
+        st.write("")  # spacing
+
+    add_clicked = st.button("Add calibration point", use_container_width=True)
+
+    if add_clicked:
+        x_val = _safe_int(x_in)
+        y_val = _safe_int(y_in)
+        d_val = _safe_float(dist_in)
+
+        if x_val is None or y_val is None or d_val is None or d_val <= 0:
+            st.error("Please enter valid x, y and a distance > 0 meters.")
+        else:
+            new_row = pd.DataFrame([{"x": x_val, "y": y_val, "distance_m": d_val}])
+            st.session_state.calib_df = pd.concat([st.session_state.calib_df, new_row], ignore_index=True)
+            st.success(f"Added point: ({x_val}, {y_val}) → {d_val} m")
+
+    # Show and manage calibration points
+    st.write("Current calibration points:")
+    st.dataframe(st.session_state.calib_df, use_container_width=True)
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Save calibration points", use_container_width=True):
+            save_calibration_points(st.session_state.calib_df)
+            st.success(f"Saved to {CALIBRATION_CSV_PATH}")
+    with b2:
+        if st.button("Reload from disk", use_container_width=True):
+            st.session_state.calib_df = load_calibration_points()
+            st.success("Reloaded calibration points from disk")
+
+    if st.button("Clear all calibration points", use_container_width=True):
+        st.session_state.calib_df = pd.DataFrame(columns=["x", "y", "distance_m"])
+        st.warning("Cleared calibration points (not saved until you click Save).")
+
+
 with preview_col:
     st.subheader("Preview")
     st.markdown("---")
@@ -180,9 +260,7 @@ with preview_col:
             show_points=show_points,
         )
 
-    # Larger, but not overwhelming
     st.image(preview, caption=f"{selected_image} | points: {point_mode}", width=1100)
 
-# Table below (OK to scroll for this)
 st.subheader("Detections table")
 st.dataframe(df_show, use_container_width=True)
