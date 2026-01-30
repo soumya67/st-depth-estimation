@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 
 st.set_page_config(page_title="Depth Estimation Tool", layout="wide")
@@ -99,7 +100,6 @@ def load_calibration_points() -> pd.DataFrame:
     if os.path.exists(CALIBRATION_CSV_PATH):
         try:
             df = pd.read_csv(CALIBRATION_CSV_PATH)
-            # ensure required columns exist
             for c in cols:
                 if c not in df.columns:
                     df[c] = None
@@ -130,9 +130,12 @@ if "relative_path" not in predictions.columns:
     st.error("CSV missing required column: relative_path")
     st.stop()
 
-# session state for calibration points
+# session state
 if "calib_df" not in st.session_state:
     st.session_state.calib_df = load_calibration_points()
+
+if "last_click" not in st.session_state:
+    st.session_state.last_click = None  # (x, y)
 
 
 # ---------- UI layout ----------
@@ -194,37 +197,32 @@ with controls_col:
     st.caption(f"{len(df_show)} detections shown (of {len(df_img)} total)")
 
     st.divider()
-    st.subheader("Calibration points (manual entry)")
+    st.subheader("Calibration points (click image + enter distance)")
 
-    st.caption(
-        "Add a few reference points on the image with known distance (meters). "
-        "We’ll later map depth values at these points to real-world distance."
-    )
+    st.caption("Click on the preview image to capture (x, y), then enter the known distance (meters) and add the point.")
 
-    # Entry widgets
-    c1, c2 = st.columns(2)
-    with c1:
-        x_in = st.number_input("x (pixel)", min_value=0, value=0, step=1)
-        dist_in = st.number_input("known distance (m)", min_value=0.0, value=0.0, step=0.5)
-    with c2:
-        y_in = st.number_input("y (pixel)", min_value=0, value=0, step=1)
-        st.write("")  # spacing
+    # Distance only
+    dist_in = st.number_input("known distance (m)", min_value=0.0, value=5.0, step=0.5)
+
+    last = st.session_state.last_click
+    if last is None:
+        st.info("Click on the preview image (right) to select a calibration point.")
+    else:
+        st.success(f"Selected point: x={last[0]}, y={last[1]}")
 
     add_clicked = st.button("Add calibration point", use_container_width=True)
 
     if add_clicked:
-        x_val = _safe_int(x_in)
-        y_val = _safe_int(y_in)
         d_val = _safe_float(dist_in)
-
-        if x_val is None or y_val is None or d_val is None or d_val <= 0:
-            st.error("Please enter valid x, y and a distance > 0 meters.")
+        if last is None:
+            st.error("Please click on the preview image first.")
+        elif d_val is None or d_val <= 0:
+            st.error("Please enter a distance > 0 meters.")
         else:
-            new_row = pd.DataFrame([{"x": x_val, "y": y_val, "distance_m": d_val}])
+            new_row = pd.DataFrame([{"x": int(last[0]), "y": int(last[1]), "distance_m": float(d_val)}])
             st.session_state.calib_df = pd.concat([st.session_state.calib_df, new_row], ignore_index=True)
-            st.success(f"Added point: ({x_val}, {y_val}) → {d_val} m")
+            st.success(f"Added point: ({int(last[0])}, {int(last[1])}) → {float(d_val)} m")
 
-    # Show and manage calibration points
     st.write("Current calibration points:")
     st.dataframe(st.session_state.calib_df, use_container_width=True)
 
@@ -240,6 +238,7 @@ with controls_col:
 
     if st.button("Clear all calibration points", use_container_width=True):
         st.session_state.calib_df = pd.DataFrame(columns=["x", "y", "distance_m"])
+        st.session_state.last_click = None
         st.warning("Cleared calibration points (not saved until you click Save).")
 
 
@@ -260,7 +259,14 @@ with preview_col:
             show_points=show_points,
         )
 
-    st.image(preview, caption=f"{selected_image} | points: {point_mode}", width=1100)
+    st.caption("Click anywhere on the image to select a calibration point.")
+    click = streamlit_image_coordinates(preview, key="preview_click")
+
+    if click is not None:
+        st.session_state.last_click = (int(click["x"]), int(click["y"]))
+
+    # Optional caption (since streamlit_image_coordinates already renders the image)
+    st.caption(f"{selected_image} | points: {point_mode}")
 
 st.subheader("Detections table")
 st.dataframe(df_show, use_container_width=True)
